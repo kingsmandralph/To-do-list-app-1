@@ -1,4 +1,4 @@
-# To-do-list-app-2
+# To-do-list-app-1
 A to do list app using Django
 
 ## Prerequisites 
@@ -22,6 +22,4 @@ A to do list app using Django
 
 🚀🚀 You have successfully launched the to-do application. 🚀🚀
 
-# Demo Link
 
-[Demo App](http://kingsman999.pythonanywhere.com/login/?next=/)
