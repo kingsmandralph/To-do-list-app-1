@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Swapcard Bug Bounty - Recon Report</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --border: #30363d;
+    --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
+    --critical: #ff7b72; --high: #ffa657; --medium: #e3b341;
+    --low: #3fb950; --info: #58a6ff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',monospace; padding: 2rem; }
+  h1 { font-size: 1.8rem; border-bottom: 1px solid var(--border); padding-bottom: 1rem; margin-bottom: 2rem; }
+  h2 { font-size: 1.2rem; color: var(--accent); margin: 2rem 0 1rem; }
+  h3 { font-size: 1rem; margin: 1rem 0 0.5rem; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.2rem; margin-bottom: 1rem; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: bold; margin-right: 6px; }
+  .critical { background: rgba(255,123,114,0.15); color: var(--critical); border: 1px solid var(--critical); }
+  .high { background: rgba(255,166,87,0.15); color: var(--high); border: 1px solid var(--high); }
+  .medium { background: rgba(227,179,65,0.15); color: var(--medium); border: 1px solid var(--medium); }
+  .low { background: rgba(63,185,80,0.15); color: var(--low); border: 1px solid var(--low); }
+  .info-badge { background: rgba(88,166,255,0.15); color: var(--info); border: 1px solid var(--info); }
+  code { background: #1c2128; padding: 2px 6px; border-radius: 4px; font-size: 0.85rem; color: #79c0ff; }
+  pre { background: #1c2128; padding: 1rem; border-radius: 6px; overflow-x: auto; font-size: 0.82rem; line-height: 1.5; border-left: 3px solid var(--border); }
+  .finding { border-left: 3px solid var(--border); margin-bottom: 1.5rem; }
+  .finding.critical-f { border-color: var(--critical); }
+  .finding.high-f { border-color: var(--high); }
+  .finding.medium-f { border-color: var(--medium); }
+  .finding.low-f { border-color: var(--low); }
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.9rem; }
+  th { background: #21262d; text-align: left; padding: 8px 12px; border: 1px solid var(--border); color: var(--muted); font-weight: 600; }
+  td { padding: 8px 12px; border: 1px solid var(--border); vertical-align: top; }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+  .toc a { color: var(--accent); text-decoration: none; display: block; padding: 3px 0; }
+  .toc a:hover { text-decoration: underline; }
+  .meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+  .meta-item { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 1rem; }
+  .meta-item .label { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .meta-item .value { font-size: 1.1rem; font-weight: bold; margin-top: 4px; }
+  .oos { background: rgba(255,255,255,0.04); border-left: 3px solid var(--muted); padding: 0.5rem 1rem; margin: 0.3rem 0; font-size: 0.85rem; color: var(--muted); }
+  section { margin-bottom: 3rem; }
+</style>
+</head>
+<body>
+
+<h1>🔐 Swapcard Bug Bounty — Recon Report</h1>
+
+<div class="meta">
+  <div class="meta-item"><div class="label">Program</div><div class="value">Swapcard (YesWeHack)</div></div>
+  <div class="meta-item"><div class="label">Date</div><div class="value" id="report-date"></div></div>
+  <div class="meta-item"><div class="label">Scope</div><div class="value">*.swapcard.com</div></div>
+  <div class="meta-item"><div class="label">Status</div><div class="value" style="color:var(--medium)">In Progress</div></div>
+</div>
+
+<div class="card toc">
+  <h3>Table of Contents</h3>
+  <a href="#attack-surface">1. Attack Surface Map</a>
+  <a href="#oos">2. Out-of-Scope (Do Not Test)</a>
+  <a href="#priority">3. Priority Targets</a>
+  <a href="#graphql">4. GraphQL Testing</a>
+  <a href="#idor">5. IDOR Testing Plan</a>
+  <a href="#matomo">6. Matomo Instance</a>
+  <a href="#findings">7. Findings</a>
+  <a href="#payloads">8. Payloads Reference</a>
+</div>
+
+<!-- ========== ATTACK SURFACE ========== -->
+<section id="attack-surface">
+<h2>1. Attack Surface Map</h2>
+
+<h3>Discovered Subdomains</h3>
+<table>
+  <tr><th>Subdomain</th><th>Purpose</th><th>Notes</th><th>Priority</th></tr>
+  <tr><td><code>app.swapcard.com</code></td><td>Attendee/user web app</td><td>Main SPA, requires SwapcardYWH/BB UA</td><td><span class="badge high">HIGH</span></td></tr>
+  <tr><td><code>studio.swapcard.com</code></td><td>Organizer dashboard</td><td>Event creation/management, free account allowed</td><td><span class="badge high">HIGH</span></td></tr>
+  <tr><td><code>developer.swapcard.com</code></td><td>API / GraphQL gateway</td><td>event-admin/graphql + exhibitor/graphql</td><td><span class="badge critical">CRITICAL</span></td></tr>
+  <tr><td><code>chat-api.swapcard.com</code></td><td>WebSocket / chat</td><td>GraphQL subscriptions at /subscriptions (graphql-ws)</td><td><span class="badge high">HIGH</span></td></tr>
+  <tr><td><code>rtm.swapcard.com</code></td><td>Real-time messaging</td><td>/?app=web-user — test WS auth bypass</td><td><span class="badge high">HIGH</span></td></tr>
+  <tr><td><code>matomo.swapcard.com</code></td><td>Self-hosted analytics</td><td>Matomo — check version, anonymous API, admin panel</td><td><span class="badge critical">CRITICAL</span></td></tr>
+  <tr><td><code>vnd-api.swapcard.com</code></td><td>Legacy V1 REST API</td><td>Deprecated, may have weaker authz</td><td><span class="badge medium">MEDIUM</span></td></tr>
+  <tr><td><code>apidev.swapcard.com</code></td><td>Dev/staging API</td><td>/vnd path, test for debug endpoints</td><td><span class="badge medium">MEDIUM</span></td></tr>
+  <tr><td><code>cdn-api.swapcard.com</code></td><td>CDN / asset delivery</td><td>Public assets, check for path traversal</td><td><span class="badge low">LOW</span></td></tr>
+  <tr><td><code>release.swapcard.com</code></td><td>Product changelog</td><td>Info leakage — security fix descriptions</td><td><span class="badge low">LOW</span></td></tr>
+</table>
+
+<h3>API Endpoints</h3>
+<table>
+  <tr><th>Endpoint</th><th>Type</th><th>Auth</th></tr>
+  <tr><td><code>https://developer.swapcard.com/event-admin/graphql</code></td><td>GraphQL (Content API)</td><td>Bearer token</td></tr>
+  <tr><td><code>https://developer.swapcard.com/exhibitor/graphql</code></td><td>GraphQL (Leads API)</td><td>Bearer token</td></tr>
+  <tr><td><code>https://chat-api.swapcard.com/subscriptions</code></td><td>GraphQL WebSocket</td><td>Unknown — test unauthenticated</td></tr>
+  <tr><td><code>https://vnd-api.swapcard.com</code></td><td>REST (deprecated)</td><td>API key header</td></tr>
+  <tr><td><code>https://apidev.swapcard.com/vnd</code></td><td>REST (dev)</td><td>API key header</td></tr>
+  <tr><td><code>https://matomo.swapcard.com/index.php?module=API&amp;...</code></td><td>Matomo REST API</td><td>token_auth (anonymous?)</td></tr>
+</table>
+
+<h3>User Roles (Attack Vectors)</h3>
+<table>
+  <tr><th>Role</th><th>Access Level</th><th>Key Test</th></tr>
+  <tr><td>Attendee</td><td>Event participant</td><td>Can attendee call organizer mutations?</td></tr>
+  <tr><td>Exhibitor</td><td>Booth/lead management</td><td>Can exhibitor access other exhibitor leads?</td></tr>
+  <tr><td>Organizer</td><td>Event admin</td><td>Can organizer access other communities?</td></tr>
+  <tr><td>Community Manager</td><td>Cross-event admin</td><td>Privilege escalation from organizer?</td></tr>
+</table>
+</section>
+
+<!-- ========== OUT OF SCOPE ========== -->
+<section id="oos">
+<h2>2. Out-of-Scope — Do Not Test</h2>
+<div class="oos">Stolen secrets/credentials from third-party assets</div>
+<div class="oos">Rate-limiting in Registration</div>
+<div class="oos">Missing Backup recovery code flow in MFA</div>
+<div class="oos">Lack of jailbreak &amp; root detection</div>
+<div class="oos">Any kind of Rate-limiting bypass</div>
+<div class="oos">2FA related logic</div>
+<div class="oos">Vulnerabilities related to user email (refactor in progress — TEMPORARY)</div>
+<div class="oos">Custom fields managed without community manager permissions (known, being fixed)</div>
+<div class="oos">HTML WYSIWYG editor &lt;a&gt;/&lt;img&gt; tag redirect to malicious sites (known)</div>
+</section>
+
+<!-- ========== PRIORITY TARGETS ========== -->
+<section id="priority">
+<h2>3. Priority Targets</h2>
+<div class="card finding critical-f">
+  <span class="badge critical">P1</span> <strong>matomo.swapcard.com — Self-Hosted Analytics Admin</strong>
+  <p style="margin-top:0.5rem;color:var(--muted)">Matomo (formerly Piwik) is a self-hosted analytics platform. Anonymous API token often left enabled, older versions have RCE/SQLi CVEs. Admin panel exposure could leak all site visitor data including authenticated session info.</p>
+  <h3>Test:</h3>
+  <pre>
+# Version check
+curl -sA "Mozilla/5.0 SwapcardYWH/BB" \
+  "https://matomo.swapcard.com/index.php?module=API&method=API.getMatomoVersion&format=json"
+
+# Anonymous user list (misconfigured token_auth)
+curl -sA "Mozilla/5.0 SwapcardYWH/BB" \
+  "https://matomo.swapcard.com/index.php?module=API&method=UsersManager.getUsers&format=json&token_auth=anonymous"
+
+# All sites tracked
+curl -sA "Mozilla/5.0 SwapcardYWH/BB" \
+  "https://matomo.swapcard.com/index.php?module=API&method=SitesManager.getAllSites&format=json&token_auth=anonymous"
+
+# Admin panel
+curl -sA "Mozilla/5.0 SwapcardYWH/BB" \
+  "https://matomo.swapcard.com/index.php?module=Login"
+  </pre>
+</div>
+
+<div class="card finding critical-f">
+  <span class="badge critical">P2</span> <strong>GraphQL Introspection + IDOR</strong>
+  <p style="margin-top:0.5rem;color:var(--muted)">Both GraphQL endpoints may have introspection enabled. Combined with predictable/BSON/UUID object IDs, horizontal privilege escalation (IDOR) between events, users, communities is high probability.</p>
+</div>
+
+<div class="card finding high-f">
+  <span class="badge high">P3</span> <strong>chat-api.swapcard.com/subscriptions — Unauthenticated WebSocket</strong>
+  <p style="margin-top:0.5rem;color:var(--muted)">WebSocket GraphQL subscriptions. Test if authentication is enforced at the WS upgrade or only at subscription time. Real-time data leakage possible.</p>
+</div>
+
+<div class="card finding high-f">
+  <span class="badge high">P4</span> <strong>rtm.swapcard.com — Real-Time Messaging</strong>
+  <p style="margin-top:0.5rem;color:var(--muted)">Pusher/Socket.io style RTM endpoint. Test for unauthenticated channel subscription and cross-user message interception.</p>
+</div>
+</section>
+
+<!-- ========== GRAPHQL ========== -->
+<section id="graphql">
+<h2>4. GraphQL Testing</h2>
+
+<h3>Step 1 — Introspection (Unauthenticated)</h3>
+<pre>
+curl -sA "Mozilla/5.0 SwapcardYWH/BB" \
+  -X POST "https://developer.swapcard.com/event-admin/graphql" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"{__schema{queryType{name}types{name kind}}}"}' | jq .
+</pre>
+
+<h3>Step 2 — Get Auth Token (via app.swapcard.com login)</h3>
+<pre>
+# Login via browser devtools → Network tab → find Authorization header
+# It will look like: "Bearer eyJ..."
+# Save as: export TOKEN="eyJ..."
+</pre>
+
+<h3>Step 3 — Authenticated Schema Dump</h3>
+<pre>
+curl -sA "Mozilla/5.0 SwapcardYWH/BB" \
+  -X POST "https://developer.swapcard.com/event-admin/graphql" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: $TOKEN" \
+  -d '{"query":"{ __schema { types { name kind fields { name type { name kind ofType { name } } } } } }"}' \
+  | jq '.data.__schema.types[] | select(.fields != null) | {name, fields: [.fields[].name]}' > schema_dump.json
+</pre>
+
+<h3>Step 4 — Test IDOR Queries</h3>
+<pre>
+# Access event you don't own (change ID)
+curl -sA "Mozilla/5.0 SwapcardYWH/BB" \
+  -X POST "https://developer.swapcard.com/event-admin/graphql" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: $TOKEN" \
+  -d '{"query":"query { event(id: \"OTHER_EVENT_ID\") { id name organizer { id email } } }"}'
+
+# List users in another community
+curl -sA "Mozilla/5.0 SwapcardYWH/BB" \
+  -X POST "https://developer.swapcard.com/event-admin/graphql" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: $TOKEN" \
+  -d '{"query":"query { community(id: \"OTHER_COMMUNITY_ID\") { id name members { edges { node { id email } } } } }"}'
+</pre>
+
+<h3>Step 5 — Test WebSocket Subscription Auth</h3>
+<pre>
+# Install: npm install -g wscat
+wscat -c "wss://chat-api.swapcard.com/subscriptions" \
+  -s "graphql-ws" \
+  --header "User-Agent: Mozilla/5.0 SwapcardYWH/BB"
+
+# Send connection init WITHOUT auth
+{"type":"connection_init","payload":{}}
+
+# Then try subscribing
+{"id":"1","type":"subscribe","payload":{"query":"subscription { messages(eventId: \"EVENT_ID\") { id content sender { id } } }"}}
+</pre>
+</section>
+
+<!-- ========== IDOR ========== -->
+<section id="idor">
+<h2>5. IDOR Testing Plan</h2>
+<table>
+  <tr><th>#</th><th>Object</th><th>ID Type</th><th>Query to Test</th><th>Impact</th></tr>
+  <tr><td>1</td><td>Event</td><td>Base64/UUID</td><td><code>event(id: X)</code></td><td>Leak private event data</td></tr>
+  <tr><td>2</td><td>User</td><td>UUID</td><td><code>user(id: X)</code></td><td>PII leak (email, phone)</td></tr>
+  <tr><td>3</td><td>Community</td><td>UUID</td><td><code>community(id: X)</code></td><td>Cross-org data access</td></tr>
+  <tr><td>4</td><td>Exhibitor Lead</td><td>UUID</td><td><code>leads(exhibitorId: X)</code></td><td>Competitor intelligence</td></tr>
+  <tr><td>5</td><td>Planning/Schedule</td><td>UUID</td><td><code>planning(id: X)</code></td><td>Pre-release event data</td></tr>
+  <tr><td>6</td><td>Custom Fields</td><td>community-scoped</td><td><code>communityCustomFields(communityId: X)</code></td><td>Auth bypass (known OOS)</td></tr>
+</table>
+
+<h3>IDOR Methodology</h3>
+<pre>
+1. Create Account A (attacker) and Account B (victim) on studio.swapcard.com
+2. With Account B: create an event, note the event ID from the URL
+3. With Account A token: query event(id: B's event ID)
+4. If data returns → IDOR confirmed
+5. Test mutations: can A modify B's event?
+   mutation { updateEvent(id: "B_EVENT_ID", input: { name: "PWNED" }) { id } }
+</pre>
+</section>
+
+<!-- ========== MATOMO ========== -->
+<section id="matomo">
+<h2>6. Matomo Instance Analysis</h2>
+<div class="card finding critical-f">
+  <p><strong>Target:</strong> <code>https://matomo.swapcard.com</code></p>
+  <p><strong>Risk:</strong> Self-hosted Matomo with misconfigured anonymous API access can expose:</p>
+  <ul style="margin: 0.5rem 0 0.5rem 1.5rem; line-height:2">
+    <li>All tracked sites and their URLs</li>
+    <li>Visitor logs including authenticated user sessions</li>
+    <li>Admin user list and email addresses</li>
+    <li>Potentially RCE via older Matomo CVEs (if unpatched)</li>
+  </ul>
+  <h3>Known Matomo CVEs to Check Version Against:</h3>
+  <table>
+    <tr><th>CVE</th><th>Affected Version</th><th>Type</th></tr>
+    <tr><td>CVE-2023-46727</td><td>&lt; 4.15.1</td><td>XSS</td></tr>
+    <tr><td>CVE-2022-28121</td><td>&lt; 4.9.1</td><td>SSRF</td></tr>
+    <tr><td>CVE-2021-36098</td><td>&lt; 4.4.1</td><td>SQLi</td></tr>
+    <tr><td>CVE-2019-15106</td><td>&lt; 3.10.0</td><td>RCE (unserialize)</td></tr>
+  </table>
+</div>
+</section>
+
+<!-- ========== FINDINGS ========== -->
+<section id="findings">
+<h2>7. Findings</h2>
+<p style="color:var(--muted);font-style:italic">Fill in as testing progresses. Template below:</p>
+
+<div class="card finding medium-f">
+  <span class="badge medium">MEDIUM</span>
+  <strong>[FINDING TITLE]</strong>
+  <table style="margin-top:0.8rem">
+    <tr><th>Field</th><th>Value</th></tr>
+    <tr><td>Severity</td><td>Medium</td></tr>
+    <tr><td>CWE</td><td>CWE-639 (IDOR) / CWE-284 (Improper Access Control)</td></tr>
+    <tr><td>Endpoint</td><td><code>https://developer.swapcard.com/event-admin/graphql</code></td></tr>
+    <tr><td>Impact</td><td>Describe what data/access is exposed</td></tr>
+  </table>
+  <h3>Description</h3>
+  <p>[Describe the vulnerability]</p>
+  <h3>Steps to Reproduce</h3>
+  <pre>1. Login to app.swapcard.com
+2. Capture Bearer token from Authorization header
+3. Send the following request:
+   [paste curl command]
+4. Observe: [what happens]</pre>
+  <h3>Remediation</h3>
+  <p>[Fix recommendation]</p>
+</div>
+</section>
+
+<!-- ========== PAYLOADS ========== -->
+<section id="payloads">
+<h2>8. Quick Payloads Reference</h2>
+
+<h3>GraphQL Introspection</h3>
+<pre>{"query":"{__schema{queryType{name}mutationType{name}types{name kind fields{name type{name kind ofType{name kind}}}}}}"}</pre>
+
+<h3>GraphQL Debug (batch/alias tricks)</h3>
+<pre>
+# Alias attack (bypass field restrictions)
+{"query":"{ a: user(id:\"ID1\") { email } b: user(id:\"ID2\") { email } }"}
+
+# Batch introspection bypass
+[
+  {"query":"{__schema{queryType{name}}}"},
+  {"query":"{ me { id email } }"}
+]
+</pre>
+
+<h3>Matomo Anonymous API</h3>
+<pre>
+https://matomo.swapcard.com/index.php?module=API&method=API.getMatomoVersion&format=json
+https://matomo.swapcard.com/index.php?module=API&method=SitesManager.getAllSites&format=json&token_auth=anonymous
+https://matomo.swapcard.com/index.php?module=API&method=UsersManager.getUsers&format=json&token_auth=anonymous
+https://matomo.swapcard.com/index.php?module=API&method=Live.getLastVisitsDetails&idSite=1&period=day&date=today&format=json&token_auth=anonymous
+</pre>
+
+<h3>WebSocket Auth Test (wscat)</h3>
+<pre>
+wscat -c wss://chat-api.swapcard.com/subscriptions -s graphql-ws
+> {"type":"connection_init","payload":{}}
+> {"id":"1","type":"subscribe","payload":{"query":"subscription{messages{id content}}"}}
+</pre>
+</section>
+
+<footer style="margin-top:3rem;padding-top:1rem;border-top:1px solid var(--border);color:var(--muted);font-size:0.8rem">
+  Generated for Swapcard YesWeHack Bug Bounty Program · Responsible Disclosure · Do not share publicly
+</footer>
+
+<script>
+  document.getElementById('report-date').textContent = new Date().toISOString().split('T')[0];
+</script>
+</body>
+</html>
